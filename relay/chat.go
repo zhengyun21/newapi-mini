@@ -3,9 +3,9 @@ package relay
 import (
 	"bytes"
 	"io"
+	"log"
 	"net/http"
 	"newapi-mini/model"
-	"strings"
 
 	"github.com/gin-gonic/gin"
 	"github.com/goccy/go-json"
@@ -25,13 +25,15 @@ func RelayChat(ctx *gin.Context) {
 		return
 	}
 	// 拿到用户请求的模型
-	modelName := reqBody["model"].(string)
+	modelName, ok := reqBody["model"].(string)
+	if !ok {
+		ctx.JSON(400, gin.H{"msg": "请输入正确的模型格式"})
+		return
+	}
 	// 查找可用渠道
 	var channel model.Channel
-	model.DB.Where("status = ?", 1).First(&channel)
-	// 判断渠道是否有 modelName
-	contains := strings.Contains(channel.Models, modelName)
-	if !contains {
+	result := model.DB.Where("status = ? AND FIND_IN_SET(?,models)", 1, modelName).First(&channel)
+	if result.Error != nil {
 		ctx.JSON(404, gin.H{"msg": "该渠道下暂无该模型"})
 		return
 	}
@@ -46,7 +48,18 @@ func RelayChat(ctx *gin.Context) {
 		ctx.JSON(502, gin.H{"msg": "上游请求失败"})
 		return
 	}
-	defer resp.Body.Close()
+	defer resp.Body.Close() // 若err != nil，resp为空，也不会泄露。
+	if resp.StatusCode >= 400 {
+		// 读取上游错误响应体
+		errBody, _ := io.ReadAll(resp.Body)
+		// 记录日志，方便排查
+		// 日志内容：状态码、上游错误内容
+		log.Printf("上游错误：响应码=%v 响应体=%v", resp.StatusCode, string(errBody))
+		// 读完 body 后，原样返回给客户端
+		ctx.Data(resp.StatusCode, resp.Header.Get("Content-Type"), errBody)
+		return
+	}
 	// 获取响应内容
-	ctx.DataFromReader(resp.StatusCode, resp.ContentLength, "application/json", resp.Body, nil)
+	ctx.DataFromReader(resp.StatusCode, resp.ContentLength, resp.Header.Get("Content-Type"), resp.Body, nil)
+
 }
